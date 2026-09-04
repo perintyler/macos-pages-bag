@@ -83,6 +83,22 @@ describe("script constants", () => {
   });
 
   /**
+   * A page-layout document — a resume, a flyer — has no body text at all: every
+   * word lives in a text box, and a grouped box is not even reported among the
+   * document's own shapes. Reading only the body returned "" for such a file,
+   * which reads as "this document is empty" rather than as a gap in the reader.
+   * Both walks are what make that text reachable.
+   */
+  it("reads text from boxes and groups, not just the document body", () => {
+    expect(scripts.READ_TEXT_SCRIPT).toContain("count of shapes of d");
+    expect(scripts.READ_TEXT_SCRIPT).toContain("shapes of group g of d");
+  });
+
+  it("reports groups, so a reader can tell grouped text exists", () => {
+    expect(scripts.INSPECT_SCRIPT).toContain("count of groups of d");
+  });
+
+  /**
    * Pages answers an `open` it will not honour with `missing value` rather than
    * an error, so an unchecked script runs on and fails several lines later with
    * a message about types that never mentions the file. Checked at the source,

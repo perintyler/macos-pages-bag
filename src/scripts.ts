@@ -134,24 +134,54 @@ end run
 `;
 
 /**
- * A document's body text and nothing else, so the reply cannot collide with a
- * delimiter no matter what the document contains.
+ * All the readable text in a document: the body, then every text box, then the
+ * text boxes nested one level inside groups. Chunks are joined with a blank
+ * line.
  *
  * argv: 1 path
+ *
+ * Body text alone is not enough. A page-layout document — a resume, a flyer,
+ * anything built from boxes rather than a flowing page — has an empty body and
+ * keeps every word in shapes, so reading only the body reported such a document
+ * as blank: not an error, just silently nothing. Groups are walked because
+ * Pages does not report a grouped shape among the document's own shapes, so a
+ * section the user had grouped went missing the same quiet way.
+ *
+ * One level of nesting is deliberate. Pages exposes `shapes of group`, but a
+ * group inside a group cannot be reached by the same accessor, so deeper
+ * recursion would add code that never runs. `inspect_document` reports the
+ * shape and group counts, which is what shows whether anything was skipped.
  */
 export const READ_TEXT_SCRIPT = `
 on run argv
   set sourcePath to item 1 of argv
+  set chunks to {}
   with timeout of 20 seconds
     set wasOpen to my isAlreadyOpen(sourcePath)
     tell application "Pages"
       set d to open (POSIX file sourcePath)
       if d is missing value then error "Pages could not open the document: " & sourcePath
       set t to body text of d as text
+      if t is not "" then set end of chunks to t
+      repeat with i from 1 to count of shapes of d
+        try
+          set s to object text of shape i of d as text
+          if s is not "" then set end of chunks to s
+        end try
+      end repeat
+      repeat with g from 1 to count of groups of d
+        repeat with i from 1 to count of shapes of group g of d
+          try
+            set s to object text of shape i of group g of d as text
+            if s is not "" then set end of chunks to s
+          end try
+        end repeat
+      end repeat
       if not wasOpen then close d saving no
     end tell
   end timeout
-  return t
+  set AppleScript's text item delimiters to (linefeed & linefeed)
+  return chunks as text
 end run
 
 on isAlreadyOpen(targetPath)
@@ -193,6 +223,7 @@ on run argv
       set res to res & tab & ((count of tables of d) as text)
       set res to res & tab & ((count of images of d) as text)
       set res to res & tab & ((count of shapes of d) as text)
+      set res to res & tab & ((count of groups of d) as text)
       if not wasOpen then close d saving no
     end tell
   end timeout
@@ -366,6 +397,15 @@ on run argv
           end tell
           if px is not "" and py is not "" then set position of ti to {px as integer, py as integer}
           set i to i + 5
+        else if op is "set_shape_text" then
+          set shIdx to (item (i + 1) of argv) as integer
+          set grp to item (i + 2) of argv
+          if grp is "" then
+            set object text of shape shIdx of d to (item (i + 3) of argv)
+          else
+            set object text of shape shIdx of group (grp as integer) of d to (item (i + 3) of argv)
+          end if
+          set i to i + 4
         else
           if not wasOpen then close d saving no
           error "Unknown operation: " & op

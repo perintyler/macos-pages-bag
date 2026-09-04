@@ -17,6 +17,7 @@ const FIELD_COUNTS: Record<Operation["kind"], number> = {
   set_cell: 4,
   add_image: 5,
   add_text_item: 4,
+  set_shape_text: 3,
 };
 
 function parse(input: unknown): Operation {
@@ -123,5 +124,7 @@ function sample(kind: Operation["kind"]): Operation {
       return parse({ kind, file: "/tmp/a.png", position: [1, 2], width: 3, page: 1 });
     case "add_text_item":
       return parse({ kind, text: "x", position: [1, 2], page: 1 });
+    case "set_shape_text":
+      return parse({ kind, shape: 1, group: 2, text: "x" });
   }
 }

@@ -68,6 +68,27 @@ export const operationSchema = z.discriminatedUnion("kind", [
     position: positionSchema.optional(),
     page: z.number().int().min(1).default(1),
   }),
+  /**
+   * Replace the text of a box that already exists. This is how a page-layout
+   * document gets edited: a resume or flyer keeps its words in shapes, so
+   * `set_text` — which writes the document body — would leave every visible
+   * word untouched.
+   *
+   * `group` addresses a box nested one level inside a group, the same nesting
+   * `read_document` walks. Numbering follows the order `read_document` reports,
+   * so read the document first and count from its output.
+   */
+  z.object({
+    kind: z.literal("set_shape_text"),
+    shape: z.number().int().min(1).describe("1-based shape number, in read_document order"),
+    group: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe("1-based group number, when the box is inside a group"),
+    text: z.string().describe("Replaces the box's entire text"),
+  }),
 ]);
 
 export type Operation = z.infer<typeof operationSchema>;
@@ -124,6 +145,9 @@ export function encodeOperations(operations: Operation[]): string[] {
           op.position ? String(op.position[1]) : ABSENT,
           String(op.page),
         );
+        break;
+      case "set_shape_text":
+        argv.push(String(op.shape), op.group === undefined ? ABSENT : String(op.group), op.text);
         break;
     }
   }

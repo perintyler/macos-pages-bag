@@ -201,7 +201,8 @@ export const readDocument = defineTool({
   namespace: NAMESPACE,
   access: "read",
   name: "read_document",
-  description: "Read the body text of a Pages document.",
+  description:
+    "Read a Pages document's text: its body, plus every text box, including boxes nested in groups. Page-layout documents such as resumes keep all their text in boxes and have an empty body.",
   schema: {
     path: z.string().describe("Absolute path to a .pages document"),
   },
@@ -218,15 +219,14 @@ export const inspectDocument = defineTool({
   access: "read",
   name: "inspect_document",
   description:
-    "Count the structure of a Pages document: paragraphs, words, characters, pages, sections, tables, images and shapes.",
+    "Count the structure of a Pages document: paragraphs, words, characters, pages, sections, tables, images, shapes and groups.",
   schema: {
     path: z.string().describe("Absolute path to a .pages document"),
   },
   handler: async ({ path }) => {
     const resolved = await requireExistingFile(path, "path");
-    const [paragraphs, words, characters, pages, sections, tables, images, shapes] = splitFields(
-      await runScript(INSPECT_SCRIPT, [resolved]),
-    ).map(Number);
+    const [paragraphs, words, characters, pages, sections, tables, images, shapes, groups] =
+      splitFields(await runScript(INSPECT_SCRIPT, [resolved])).map(Number);
 
     return {
       path: resolved,
@@ -239,6 +239,9 @@ export const inspectDocument = defineTool({
       images,
       // Pages models a text box as a shape, so this counts both.
       shapes,
+      // Grouped shapes are not counted among the document's own, so groups
+      // indicate text the other totals do not account for.
+      groups,
     };
   },
   cliFormat: (result) => {
@@ -252,7 +255,7 @@ export const editDocument = defineTool({
   access: "write",
   name: "edit_document",
   description:
-    "Apply an ordered list of edits to an existing Pages document: replace or append text, style a paragraph, add page breaks, tables, cell values, images and text boxes. All edits are applied in one pass and saved.",
+    "Apply an ordered list of edits to an existing Pages document: replace or append body text, replace the text of an existing box (set_shape_text — the way to edit a resume or other page-layout document), style a paragraph, add page breaks, tables, cell values, images and text boxes. All edits are applied in one pass and saved.",
   schema: {
     path: z.string().describe("Absolute path to a .pages document"),
     operations: z
