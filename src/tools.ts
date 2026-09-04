@@ -17,15 +17,19 @@
  * regardless.
  */
 
-import { defineTool } from "@barry/tools";
+import { defineTool } from "@barry-rocks/tools";
 import { existsSync } from "node:fs";
-import { readdir, realpath } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, realpath, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
 import { z } from "zod";
 
 import { exportFormatSchema, FORMAT_EXTENSIONS, toEnumerator, type ExportFormat } from "./format.js";
 import { encodeOperations, imagePaths, operationSchema, type Operation } from "./operations.js";
+import { extractDocumentXml, parseDocx, summarize } from "./docx.js";
+import { extractPdfContent, findClippedLines } from "./fit.js";
 import { EXPORT_TIMEOUT_MS, PagesScriptError, runScript, splitFields } from "./osascript.js";
+import { isQuarantined, unblock } from "./quarantine.js";
 import { renderDocument } from "./render.js";
 import {
   isSamePath,
@@ -376,6 +380,188 @@ export const convertDocuments = defineTool({
     }
     return lines.join("\n");
   },
+});
+
+/**
+ * Export to a scratch file, hand it to `use`, and clean up.
+ *
+ * Both `check_fit` and `read_formatted` work by exporting and reading the
+ * result, and neither wants the export left on disk. The temp directory is
+ * removed even when `use` throws, so a failed check does not accumulate copies
+ * of the caller's document somewhere they would not think to look.
+ */
+async function withExport<T>(
+  source: string,
+  format: ExportFormat,
+  use: (exportedPath: string) => Promise<T>,
+): Promise<T> {
+  const scratch = await mkdtemp(join(tmpdir(), "macos-pages-export-"));
+  const exported = join(scratch, `export${FORMAT_EXTENSIONS[format]}`);
+  try {
+    await runScript(EXPORT_SCRIPT, [source, exported, toEnumerator(format)], {
+      timeoutMs: EXPORT_TIMEOUT_MS,
+    });
+    return await use(exported);
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+}
+
+export const checkFit = defineTool({
+  namespace: NAMESPACE,
+  access: "read",
+  name: "check_fit",
+  description:
+    "Check whether a document's text actually fits, by comparing what it contains against what its PDF renders. Reports any lines clipped out of view. Pages' own page count does not reveal this — a box can overflow and silently drop lines while the document still reports one page.",
+  schema: {
+    path: z.string().describe("Absolute path to a .pages document"),
+  },
+  handler: async ({ path }) => {
+    const resolved = await requireExistingFile(path, "path");
+
+    // The document's own text, from every box and group.
+    const sourceText = await runScript(READ_TEXT_SCRIPT, [resolved]);
+
+    const rendered = await withExport(resolved, "pdf", (pdf) => extractPdfContent(pdf));
+    const clipped = findClippedLines(sourceText, rendered.text);
+
+    return {
+      path: resolved,
+      fits: clipped.length === 0,
+      pages: rendered.pages,
+      clippedLines: clipped.length,
+      // Verbatim, so the caller can see exactly what fell off rather than being
+      // told a count and left to guess.
+      clipped,
+    };
+  },
+  cliFormat: (result) => {
+    const r = result as { fits: boolean; pages: number; clipped: string[] };
+    if (r.fits) return `Fits on ${r.pages} page(s); nothing clipped.`;
+    return [
+      `${r.clipped.length} line(s) do not fit and are not rendered:`,
+      ...r.clipped.map((line) => `  ✗ ${line}`),
+    ].join("\n");
+  },
+});
+
+export const readFormatted = defineTool({
+  namespace: NAMESPACE,
+  access: "read",
+  name: "read_formatted",
+  description:
+    "Read a document's text along with its real formatting — bold, italic, size, font and list nesting, per run. Use this before editing a styled document: AppleScript reports only each paragraph's first character, so a document with bold headings reads back as entirely bold.",
+  schema: {
+    path: z.string().describe("Absolute path to a .pages document"),
+    includeRuns: z
+      .boolean()
+      .default(false)
+      .describe("Include every styled run. Off by default — a long document has hundreds."),
+  },
+  handler: async ({ path, includeRuns }) => {
+    const resolved = await requireExistingFile(path, "path");
+
+    const paragraphs = await withExport(resolved, "docx", async (docx) => {
+      const scratch = await mkdtemp(join(tmpdir(), "macos-pages-docx-"));
+      try {
+        await extractDocumentXml(docx, scratch);
+        return parseDocx(await readFile(join(scratch, "word", "document.xml"), "utf8"));
+      } finally {
+        await rm(scratch, { recursive: true, force: true });
+      }
+    });
+
+    return {
+      path: resolved,
+      summary: summarize(paragraphs),
+      paragraphs: paragraphs.map((p) => ({
+        text: p.text,
+        level: p.level,
+        ...(includeRuns ? { runs: p.runs } : {}),
+      })),
+    };
+  },
+  cliFormat: (result) => {
+    const r = result as { summary: { paragraphs: number; runs: number; boldRuns: number; sizes: number[]; fonts: string[] } };
+    const s = r.summary;
+    return `${s.paragraphs} paragraphs, ${s.runs} runs (${s.boldRuns} bold). Sizes: ${s.sizes.join(", ")}pt. Fonts: ${s.fonts.join(", ")}.`;
+  },
+});
+
+export const diffDocuments = defineTool({
+  namespace: NAMESPACE,
+  access: "read",
+  name: "diff_documents",
+  description:
+    "Compare a document's text against another document or a supplied string, and report which lines were added and removed. Use it to confirm an edit changed only what was intended.",
+  schema: {
+    path: z.string().describe("Absolute path to the .pages document to compare"),
+    against: z.string().optional().describe("Absolute path to a second .pages document"),
+    text: z.string().optional().describe("Text to compare against, instead of a second document"),
+  },
+  handler: async ({ path, against, text }) => {
+    if ((against === undefined) === (text === undefined)) {
+      throw new PreflightError("Pass exactly one of `against` (a document) or `text`.");
+    }
+
+    const resolved = await requireExistingFile(path, "path");
+    const current = await runScript(READ_TEXT_SCRIPT, [resolved]);
+
+    const other =
+      against !== undefined
+        ? await runScript(READ_TEXT_SCRIPT, [await requireExistingFile(against, "against")])
+        : (text as string);
+
+    const lines = (value: string) =>
+      value.split("\n").map((l) => l.trim()).filter(Boolean);
+
+    const currentLines = lines(current);
+    const otherLines = lines(other);
+    const currentSet = new Set(currentLines);
+    const otherSet = new Set(otherLines);
+
+    // Set difference rather than a positional diff: the question these tools
+    // answer is "did any content disappear", which reordering should not affect.
+    const removed = otherLines.filter((l) => !currentSet.has(l));
+    const added = currentLines.filter((l) => !otherSet.has(l));
+
+    return {
+      path: resolved,
+      unchanged: currentLines.length - added.length,
+      added,
+      removed,
+    };
+  },
+  cliFormat: (result) => {
+    const r = result as { added: string[]; removed: string[]; unchanged: number };
+    const out = [`${r.unchanged} line(s) unchanged, ${r.added.length} added, ${r.removed.length} removed.`];
+    for (const line of r.removed) out.push(`  - ${line}`);
+    for (const line of r.added) out.push(`  + ${line}`);
+    return out.join("\n");
+  },
+});
+
+export const unblockDocument = defineTool({
+  namespace: NAMESPACE,
+  access: "write",
+  name: "unblock_document",
+  description:
+    "Remove the quarantine flag macOS puts on a downloaded .pages file. Pages refuses to open a quarantined document under automation, failing with 'can't be opened right now' rather than naming the cause.",
+  schema: {
+    path: z.string().describe("Absolute path to a .pages document"),
+  },
+  handler: async ({ path }) => {
+    const resolved = await requireExistingFile(path, "path");
+    const result = await unblock(resolved);
+    return {
+      path: result.path,
+      removed: result.removed,
+      detail: result.removed
+        ? "Quarantine flag removed; Pages can open this file now."
+        : "The file was not quarantined, so nothing changed.",
+    };
+  },
+  cliFormat: (result) => (result as { detail: string }).detail,
 });
 
 export const renderDocumentTool = defineTool({
