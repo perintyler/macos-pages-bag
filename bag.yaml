@@ -1,0 +1,28 @@
+name: macos-pages
+description: Apple Pages — author, read, edit and export documents on macOS
+
+instructions: |
+  Pages documents are driven through AppleScript, so Pages must be installed and
+  this machine must allow automation of it.
+
+  - Paths must be absolute.
+  - create_document takes plain text; newlines separate paragraphs. There is no
+    markdown support — use edit_document for formatting, or the md_to_pdf bag if
+    styled markdown output is what is wanted.
+  - Setting body text replaces a template's own content, so templates other than
+    Blank are best-effort.
+  - The bag never closes or quits a document you have open; it refuses to write
+    to one instead.
+
+tools:
+  entry: tools.ts
+  # Situational: list_templates is worth one call while composing a
+  # create_document, and read_table only matters for a document already known to
+  # contain one. Both stay reachable through tool_search.
+  deferred:
+    - list_templates
+    - read_table
+
+# Pages is an application bundle rather than a binary on PATH, so the
+# `dependencies:` check would not see it. `status` reports whether it is
+# installed, and distinguishes that from automation being denied.
