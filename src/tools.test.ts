@@ -23,7 +23,7 @@ const MANIFEST_NAME = /^name:\s*(\S+)/m.exec(MANIFEST)?.[1] ?? "";
 
 describe("tool exports", () => {
   it("exports the tools the bag promises", () => {
-    expect(allTools.length).toBe(11);
+    expect(allTools.length).toBe(15);
   });
 
   for (const tool of allTools) {
@@ -70,16 +70,20 @@ describe("access levels", () => {
       "create_document",
       "edit_document",
       "export_document",
+      "unblock_document",
     ]);
   });
 
   it("keeps the inspection tools read-only", () => {
     const reads = allTools.filter((t) => t.access === "read").map((t) => t.name).sort();
     expect(reads).toEqual([
+      "check_fit",
+      "diff_documents",
       "inspect_document",
       "list_documents",
       "list_templates",
       "read_document",
+      "read_formatted",
       "read_table",
       "render_document",
       "status",
@@ -92,7 +96,7 @@ describe("manifest agreement", () => {
     // A deferred name with no matching tool is silently ignored, leaving the
     // tool in tools/list where the manifest says it should not be.
     const deferred = [...MANIFEST.matchAll(/^\s+- (\w+)$/gm)].map((m) => m[1]);
-    expect(deferred).toEqual(["list_templates", "read_table"]);
+    expect(deferred).toEqual(["list_templates", "read_table", "diff_documents", "unblock_document"]);
     for (const name of deferred) {
       expect(allTools.some((t) => t.name === name), `${name} must exist`).toBe(true);
     }

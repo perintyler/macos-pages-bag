@@ -22,6 +22,8 @@ tools:
   deferred:
     - list_templates
     - read_table
+    - diff_documents
+    - unblock_document
 
 # Pages is an application bundle rather than a binary on PATH, so the
 # `dependencies:` check would not see it. `status` reports whether it is
