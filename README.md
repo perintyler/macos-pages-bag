@@ -81,6 +81,19 @@ worth knowing:
   until somebody dismisses it. This bag checks paths before Pages sees them,
   which is what keeps that from happening; if it does happen, the error says so.
 
+## Installing
+
+```bash
+git clone git@github.com:perintyler/macos-pages-bag.git ~/repos/bags/macos-pages
+barry install ~/repos/bags/macos-pages --as macos-pages
+barry pack macos-pages
+```
+
+`package.json` depends on `@barry/tools` through a relative `link:`, which
+assumes [barry](https://github.com/perintyler/barry) is checked out alongside
+this bag — `../../barry/packages/tools` from here. Clone it somewhere else and
+point that specifier at wherever your checkout actually is.
+
 ## Development
 
 ```bash
