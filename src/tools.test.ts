@@ -18,6 +18,9 @@ const MANIFEST = readFileSync(
   "utf8",
 );
 
+/** The bag's declared name, which its auto-trait turns into a namespace. */
+const MANIFEST_NAME = /^name:\s*(\S+)/m.exec(MANIFEST)?.[1] ?? "";
+
 describe("tool exports", () => {
   it("exports the tools the bag promises", () => {
     expect(allTools.length).toBe(10);
@@ -32,14 +35,22 @@ describe("tool exports", () => {
         expect(tool.description).toBeTruthy();
       });
 
-      it("is in the pages namespace", () => {
-        expect(tool.namespace).toBe("pages");
+      /**
+       * The namespace has to equal the bag name. The auto-trait that grants
+       * these tools is derived before the entry module is introspected, so it
+       * falls back to the bag name; any other namespace grants something no
+       * tool publishes and every session sees zero tools while `bag show`
+       * still reports the bag enabled. That failure is silent, which is why it
+       * is pinned here against the manifest rather than to a literal.
+       */
+      it("is in a namespace the bag's own trait grants", () => {
+        expect(tool.namespace).toBe(MANIFEST_NAME);
       });
 
       it("does not repeat its namespace in its name", () => {
         // Namespaces already prefix the tool at the protocol level, so
-        // `pages_status` would surface as `pages_pages_status`.
-        expect(tool.name.startsWith("pages")).toBe(false);
+        // `macos-pages_status` would surface twice over.
+        expect(tool.name.startsWith(MANIFEST_NAME)).toBe(false);
       });
 
       it("declares an access level defineTool accepts", () => {

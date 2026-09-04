@@ -40,7 +40,15 @@ import {
   STATUS_SCRIPT,
 } from "./scripts.js";
 
-const NAMESPACE = "pages";
+/**
+ * Matches the bag name deliberately. A bag's auto-trait grants its tools'
+ * namespaces, but the registry derives that trait before it has introspected
+ * the entry module — with no tools loaded yet it falls back to the bag name
+ * (auto-traits.ts, `ownNamespaces`). A namespace that differs from the bag name
+ * therefore grants something no tool publishes, and every session gets zero
+ * tools while `bag show` still reports the bag enabled.
+ */
+const NAMESPACE = "macos-pages";
 const PAGES_APP = "/Applications/Pages.app";
 
 export interface OpenDocument {
