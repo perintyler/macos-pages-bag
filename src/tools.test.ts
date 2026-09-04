@@ -23,7 +23,7 @@ const MANIFEST_NAME = /^name:\s*(\S+)/m.exec(MANIFEST)?.[1] ?? "";
 
 describe("tool exports", () => {
   it("exports the tools the bag promises", () => {
-    expect(allTools.length).toBe(10);
+    expect(allTools.length).toBe(11);
   });
 
   for (const tool of allTools) {
@@ -81,6 +81,7 @@ describe("access levels", () => {
       "list_templates",
       "read_document",
       "read_table",
+      "render_document",
       "status",
     ]);
   });

@@ -10,6 +10,11 @@
  * - The bag never closes or quits something the user opened. A document is only
  *   closed by the same script that opened it. There is deliberately no `quit`
  *   or `close` tool: discarding someone's unsaved work is not undoable.
+ *
+ * `render_document` is the exception to both, and to AppleScript entirely — see
+ * render.ts. Pages will not open a copy of a document, so anything that works on
+ * a duplicate cannot be seen through Pages at all; QuickLook can render it
+ * regardless.
  */
 
 import { defineTool } from "@barry/tools";
@@ -21,6 +26,7 @@ import { z } from "zod";
 import { exportFormatSchema, FORMAT_EXTENSIONS, toEnumerator, type ExportFormat } from "./format.js";
 import { encodeOperations, imagePaths, operationSchema, type Operation } from "./operations.js";
 import { EXPORT_TIMEOUT_MS, PagesScriptError, runScript, splitFields } from "./osascript.js";
+import { renderDocument } from "./render.js";
 import {
   isSamePath,
   PreflightError,
@@ -369,6 +375,45 @@ export const convertDocuments = defineTool({
       if (item.error) lines.push(`  ✗ ${item.source}: ${item.error}`);
     }
     return lines.join("\n");
+  },
+});
+
+export const renderDocumentTool = defineTool({
+  namespace: NAMESPACE,
+  access: "read",
+  name: "render_document",
+  description:
+    "Render a Pages document's first page as an image, to see its actual layout and formatting. Works without launching Pages, and on copies Pages refuses to open. Shows the last saved state, not unsaved edits.",
+  schema: {
+    path: z.string().describe("Absolute path to a .pages document"),
+    destination: z
+      .string()
+      .optional()
+      .describe("Absolute path for the .png (defaults to alongside the document)"),
+    width: z.number().int().min(200).max(4000).default(1200).describe("Image width in pixels"),
+  },
+  handler: async ({ path, destination, width }) => {
+    const resolved = await requireExistingFile(path, "path");
+    const target = destination ?? resolved.replace(/\.pages$/, "") + "-preview.png";
+    await requireWritableTarget(target, "destination");
+
+    const result = await renderDocument(resolved, target, width);
+
+    return {
+      path: result.path,
+      route: result.route,
+      documentModified: result.documentModified.toISOString(),
+      // The two routes differ in how current they are, and a stale image that
+      // looks current is worse than none — so say which one this is.
+      note:
+        result.route === "quicklook"
+          ? "Rendered from the saved file. Unsaved changes in an open window are not shown."
+          : "QuickLook was unavailable, so this is the preview Pages embedded at its last save — it may be older than the file.",
+    };
+  },
+  cliFormat: (result) => {
+    const r = result as { path: string; note: string };
+    return `${r.path}\n${r.note}`;
   },
 });
 
