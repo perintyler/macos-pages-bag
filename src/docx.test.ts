@@ -20,6 +20,7 @@ const xml = `<?xml version="1.0"?>
   </w:p>
   <w:p><w:pPr><w:numPr><w:ilvl w:val="1"/></w:numPr></w:pPr><w:r><w:rPr><w:i/></w:rPr><w:t>Won grants</w:t></w:r></w:p>
   <w:p><w:r><w:rPr><w:b w:val="0"/></w:rPr><w:t>Explicitly not bold</w:t></w:r></w:p>
+  <w:p><w:r><w:rPr><w:u w:val="none"/></w:rPr><w:t>Explicitly not underlined</w:t></w:r></w:p>
   <w:p><w:r><w:t>Inherits its size</w:t></w:r></w:p>
   <w:p><w:r><w:t>   </w:t></w:r></w:p>
   <w:p><w:r><w:t>Tom &amp; Jerry &lt;3</w:t></w:r></w:p>
@@ -32,7 +33,7 @@ describe("parseDocx", () => {
     // A Pages export is full of spacing paragraphs; returning them as empty
     // entries would bury the real content.
     expect(parsed.map((p) => p.text)).not.toContain("");
-    expect(parsed).toHaveLength(6);
+    expect(parsed).toHaveLength(7);
   });
 
   /**
@@ -70,12 +71,22 @@ describe("parseDocx", () => {
     expect(parsed[3].runs[0].bold).toBe(false);
   });
 
+  /**
+   * Underline spells its off-state as `none`, not `0`. Missing that read 34
+   * deliberately un-underlined runs in a real resume as underlined — and the
+   * whole point of this parser is to report styling accurately.
+   */
+  it("does not read an explicit underline-off as underlined", () => {
+    const paragraph = parsed.find((p) => p.text === "Explicitly not underlined");
+    expect(paragraph?.runs[0].underline).toBe(false);
+  });
+
   it("leaves an inherited size absent rather than guessing one", () => {
-    expect(parsed[4].runs[0].size).toBeUndefined();
+    expect(parsed[5].runs[0].size).toBeUndefined();
   });
 
   it("decodes XML entities", () => {
-    expect(parsed[5].text).toBe("Tom & Jerry <3");
+    expect(parsed[6].text).toBe("Tom & Jerry <3");
   });
 
   it("preserves significant whitespace between runs", () => {
@@ -87,7 +98,7 @@ describe("summarize", () => {
   const summary = summarize(parsed);
 
   it("counts runs and styled runs", () => {
-    expect(summary.runs).toBe(9);
+    expect(summary.runs).toBe(10);
     expect(summary.boldRuns).toBe(3);
     expect(summary.italicRuns).toBe(1);
   });

@@ -71,14 +71,19 @@ export interface DocxParagraph {
 const RUN_PROPERTIES = /<w:rPr>([\s\S]*?)<\/w:rPr>/;
 
 /**
- * `<w:b/>` and `<w:b w:val="0"/>` both exist: the second turns bold *off*, and
- * reading it as "bold" would report plain text as bold.
+ * Whether a run turns a property on.
+ *
+ * The element's presence is not the answer: `<w:b/>` is bold, `<w:b w:val="0"/>`
+ * is explicitly *not* bold, and reading the second as bold reports plain text as
+ * styled. Underline spells its off-state differently again — `<w:u w:val="none"/>`
+ * rather than "0" — and missing that made 34 deliberately un-underlined runs in
+ * one real document read as underlined.
  */
 function hasToggle(properties: string, tag: string): boolean {
   const match = new RegExp(`<w:${tag}(\\s[^>]*)?/?>`).exec(properties);
   if (!match) return false;
   const attributes = match[1] ?? "";
-  return !/w:val="(0|false|off)"/.test(attributes);
+  return !/w:val="(0|false|off|none)"/.test(attributes);
 }
 
 function parseRun(xml: string): DocxRun | null {
