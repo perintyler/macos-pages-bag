@@ -23,7 +23,7 @@ const MANIFEST_NAME = /^name:\s*(\S+)/m.exec(MANIFEST)?.[1] ?? "";
 
 describe("tool exports", () => {
   it("exports the tools the bag promises", () => {
-    expect(allTools.length).toBe(16);
+    expect(allTools.length).toBe(18);
   });
 
   for (const tool of allTools) {
@@ -70,6 +70,7 @@ describe("access levels", () => {
       "create_document",
       "edit_document",
       "export_document",
+      "replace_text",
       "restore_styling",
       "unblock_document",
     ]);
@@ -83,6 +84,7 @@ describe("access levels", () => {
       "inspect_document",
       "list_documents",
       "list_templates",
+      "list_text_runs",
       "read_document",
       "read_formatted",
       "read_table",

@@ -27,6 +27,7 @@ import { z } from "zod";
 import { exportFormatSchema, FORMAT_EXTENSIONS, toEnumerator, type ExportFormat } from "./format.js";
 import { encodeOperations, imagePaths, operationSchema, type Operation } from "./operations.js";
 import { extractDocumentXml, parseDocx, summarize } from "./docx.js";
+import { rewriteDocx, runTexts } from "./docx-write.js";
 import { extractPdfContent, findClippedLines } from "./fit.js";
 import { EXPORT_TIMEOUT_MS, PagesScriptError, runScript, splitFields } from "./osascript.js";
 import { isQuarantined, unblock } from "./quarantine.js";
@@ -43,6 +44,7 @@ import {
   CREATE_DOCUMENT_SCRIPT,
   EDIT_DOCUMENT_SCRIPT,
   EXPORT_SCRIPT,
+  IMPORT_DOCX_SCRIPT,
   INSPECT_SCRIPT,
   LIST_DOCUMENTS_SCRIPT,
   LIST_TEMPLATES_SCRIPT,
@@ -688,6 +690,103 @@ export const restoreStyling = defineTool({
     for (const text of r.unmatchedText) lines.push(`  ? ${text}`);
     return lines.join("\n");
   },
+});
+
+export const replaceText = defineTool({
+  namespace: NAMESPACE,
+  access: "write",
+  name: "replace_text",
+  description:
+    "Replace text in a document while keeping its formatting — including underlined heading rules and nested bullets, which AppleScript cannot preserve. Works by exporting to Word format, editing that, and importing it back. Use this for any document whose design matters; use edit_document for plain text.",
+  schema: {
+    path: z.string().describe("Absolute path to a .pages document"),
+    replacements: z
+      .array(
+        z.object({
+          find: z.string().min(1).describe("Exact text to find (literal, not a pattern)"),
+          replace: z.string().describe("What to put in its place"),
+        }),
+      )
+      .min(1)
+      .describe("Applied in order. Match against the strings list_text_runs reports."),
+    destination: z
+      .string()
+      .optional()
+      .describe("Where to write the result (defaults to replacing the source document)"),
+  },
+  handler: async ({ path, replacements, destination }) => {
+    const resolved = await requireExistingFile(path, "path");
+    const target = destination ?? resolved;
+    await requireWritableTarget(target, "destination");
+    if (destination === undefined) await refuseIfOpen(resolved);
+
+    const scratch = await mkdtemp(join(tmpdir(), "macos-pages-replace-"));
+    try {
+      const exported = join(scratch, "document.docx");
+      await runScript(EXPORT_SCRIPT, [resolved, exported, toEnumerator("docx")], {
+        timeoutMs: EXPORT_TIMEOUT_MS,
+      });
+
+      const { docx, applied } = await rewriteDocx(exported, replacements);
+
+      // Pages opens a .docx and saves it as .pages, which is what carries the
+      // edited formatting back into the native format.
+      await runScript(IMPORT_DOCX_SCRIPT, [docx, target], { timeoutMs: EXPORT_TIMEOUT_MS });
+
+      const missed = applied.filter((entry) => entry.count === 0);
+
+      return {
+        path: target,
+        replacements: applied,
+        // Named explicitly. A replacement that matched nothing is the common
+        // failure — document text is split across runs at every styling
+        // boundary, so a phrase spanning a bold word is not one string — and
+        // reporting only a total would hide it.
+        unmatched: missed.map((entry) => entry.find),
+        note:
+          missed.length > 0
+            ? "Some text was not found. Document text splits at every styling change, so a phrase containing a bold word is several separate strings — check list_text_runs for what to match."
+            : undefined,
+      };
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  },
+  cliFormat: (result) => {
+    const r = result as { replacements: Array<{ find: string; count: number }>; unmatched: string[] };
+    const lines = r.replacements.map((entry) => `  ${entry.count}x  ${entry.find.slice(0, 60)}`);
+    if (r.unmatched.length > 0) lines.push(`  ${r.unmatched.length} not found`);
+    return lines.join("\n");
+  },
+});
+
+export const listTextRuns = defineTool({
+  namespace: NAMESPACE,
+  access: "read",
+  name: "list_text_runs",
+  description:
+    "List the document's text as the runs it is actually stored in. Formatting splits text at every styling change, so a sentence containing a bold word is several separate strings — these are the strings replace_text can match.",
+  schema: {
+    path: z.string().describe("Absolute path to a .pages document"),
+    contains: z.string().optional().describe("Only runs containing this text"),
+  },
+  handler: async ({ path, contains }) => {
+    const resolved = await requireExistingFile(path, "path");
+
+    const runs = await withExport(resolved, "docx", async (docx) => {
+      const scratch = await mkdtemp(join(tmpdir(), "macos-pages-runs-"));
+      try {
+        await extractDocumentXml(docx, scratch);
+        return runTexts(await readFile(join(scratch, "word", "document.xml"), "utf8"));
+      } finally {
+        await rm(scratch, { recursive: true, force: true });
+      }
+    });
+
+    const filtered = contains === undefined ? runs : runs.filter((text) => text.includes(contains));
+    return { path: resolved, count: filtered.length, runs: filtered };
+  },
+  cliFormat: (result) => (result as { runs: string[] }).runs.map((r) => JSON.stringify(r)).join("\n"),
 });
 
 export const diffDocuments = defineTool({

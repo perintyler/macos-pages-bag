@@ -439,6 +439,41 @@ end isAlreadyOpen
 `;
 
 /**
+ * Open a `.docx` and save it as `.pages`.
+ *
+ * argv: 1 source .docx, 2 destination .pages
+ *
+ * This is the half of the round trip AppleScript is still needed for. Pages
+ * imports Word documents natively, and that import is what carries underline
+ * and list nesting — neither of which its own scripting dictionary exposes —
+ * back into a native document.
+ *
+ * The document is always closed afterwards: this script opened it, and it is a
+ * temporary import nobody wants left on screen.
+ */
+export const IMPORT_DOCX_SCRIPT = `
+on run argv
+  set sourcePath to item 1 of argv
+  set destPath to item 2 of argv
+  with timeout of 120 seconds
+    tell application "Pages"
+      -- The "as alias" coercion is load-bearing. Opening a POSIX file built
+      -- from an argv string fails here: Pages returns no document and the
+      -- import reports "could not open the Word file", while the identical
+      -- path interpolated into the script text opens fine. Coercing to an
+      -- alias resolves the path before Pages sees it, and then both forms
+      -- behave the same.
+      set d to open ((POSIX file sourcePath) as alias)
+      if d is missing value then error "Pages could not open the Word file: " & sourcePath
+      save d in file ((POSIX file destPath) as text)
+      close d saving no
+    end tell
+  end timeout
+  return "ok"
+end run
+`;
+
+/**
  * The text of one box, rather than the whole document.
  *
  * argv: 1 path, 2 shape, 3 group ("" for none)

@@ -120,6 +120,23 @@ describe("script constants", () => {
    * styles nothing at all — which is how a restore reports success having
    * changed nothing.
    */
+  /**
+   * Opening a POSIX file built from an argv string fails: Pages returns no
+   * document and reports "could not open the Word file", while the identical
+   * path interpolated into the script text opens fine. Coercing to an alias
+   * fixes it. This cost a long hunt through quarantine, zip structure and
+   * temp-directory theories before the argv-vs-interpolation difference showed
+   * up, so it is pinned rather than left to be rediscovered.
+   */
+  it("coerces the imported Word file's path to an alias", () => {
+    expect(scripts.IMPORT_DOCX_SCRIPT).toContain("(POSIX file sourcePath) as alias");
+  });
+
+  /**
+   * The reset-to-baseline pass styles "character 1 to the end" of each
+   * paragraph, and only AppleScript knows where that end is. A caller-guessed
+   * length that overruns styles nothing at all.
+   */
   it("resolves the end-of-paragraph sentinel itself", () => {
     expect(scripts.STYLE_RUNS_SCRIPT).toContain("if c2 is -1 then set c2 to count of characters");
   });
@@ -143,6 +160,16 @@ describe("script constants", () => {
   it("closes only documents it opened itself", () => {
     for (const [name, script] of ALL) {
       if (!script.includes("set d to open ")) continue;
+
+      // IMPORT_DOCX_SCRIPT opens a .docx this bag just wrote to a temp
+      // directory — a file that did not exist a moment ago and that nobody can
+      // have open. The guard exists to protect a user's window; there is no
+      // window here, and leaving the import on screen would be the bug.
+      if (name === "IMPORT_DOCX_SCRIPT") {
+        expect(script, "the import must still close what it opened").toContain("close d saving no");
+        continue;
+      }
+
       expect(script, `${name} must check whether the document was already open`).toContain(
         "my isAlreadyOpen(",
       );
