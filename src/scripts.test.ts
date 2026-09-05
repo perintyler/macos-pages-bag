@@ -114,6 +114,27 @@ describe("script constants", () => {
   });
 
   /**
+   * The reset-to-baseline pass asks to style "character 1 to the end" of each
+   * paragraph, and only AppleScript knows where that end is. Without the
+   * sentinel the caller would have to guess a length, and a guess that overruns
+   * styles nothing at all — which is how a restore reports success having
+   * changed nothing.
+   */
+  it("resolves the end-of-paragraph sentinel itself", () => {
+    expect(scripts.STYLE_RUNS_SCRIPT).toContain("if c2 is -1 then set c2 to count of characters");
+  });
+
+  /**
+   * One stale offset should not discard every other correct restoration, so a
+   * range Pages rejects is skipped. Returning the count is what keeps that from
+   * being silent — a caller seeing far fewer applied than requested knows.
+   */
+  it("skips a range it cannot style rather than abandoning the batch", () => {
+    expect(scripts.STYLE_RUNS_SCRIPT).toContain("set applied to applied + 1");
+    expect(scripts.STYLE_RUNS_SCRIPT).toContain("return applied as text");
+  });
+
+  /**
    * `open` on a document that is already on screen returns the user's own
    * window, so closing unconditionally discards whatever they had not saved.
    * An export was seen doing exactly that. Every close has to be conditional on

@@ -30,6 +30,7 @@ import { extractDocumentXml, parseDocx, summarize } from "./docx.js";
 import { extractPdfContent, findClippedLines } from "./fit.js";
 import { EXPORT_TIMEOUT_MS, PagesScriptError, runScript, splitFields } from "./osascript.js";
 import { isQuarantined, unblock } from "./quarantine.js";
+import { matchRuns, withoutRedundant } from "./styling.js";
 import { renderDocument } from "./render.js";
 import {
   isSamePath,
@@ -45,8 +46,10 @@ import {
   INSPECT_SCRIPT,
   LIST_DOCUMENTS_SCRIPT,
   LIST_TEMPLATES_SCRIPT,
+  READ_SHAPE_TEXT_SCRIPT,
   READ_TABLE_SCRIPT,
   READ_TEXT_SCRIPT,
+  STYLE_RUNS_SCRIPT,
   STATUS_SCRIPT,
 } from "./scripts.js";
 
@@ -215,11 +218,29 @@ export const readDocument = defineTool({
     "Read a Pages document's text: its body, plus every text box, including boxes nested in groups. Page-layout documents such as resumes keep all their text in boxes and have an empty body.",
   schema: {
     path: z.string().describe("Absolute path to a .pages document"),
+    shape: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe("Read only this box, numbered as read_document reports them. Omit for the whole document."),
+    group: z.number().int().min(1).optional().describe("1-based group number, when the box is inside a group"),
   },
-  handler: async ({ path }) => {
+  handler: async ({ path, shape, group }) => {
     const resolved = await requireExistingFile(path, "path");
-    const text = await runScript(READ_TEXT_SCRIPT, [resolved]);
-    return { path: resolved, text };
+
+    // Scoping to one box matters for editing: offsets computed against the whole
+    // document's concatenated text point at the wrong characters.
+    const text =
+      shape === undefined
+        ? await runScript(READ_TEXT_SCRIPT, [resolved])
+        : await runScript(READ_SHAPE_TEXT_SCRIPT, [
+            resolved,
+            String(shape),
+            group === undefined ? "" : String(group),
+          ]);
+
+    return { path: resolved, ...(shape === undefined ? {} : { shape, group }), text };
   },
   cliFormat: (result) => (result as { text: string }).text,
 });
@@ -272,8 +293,12 @@ export const editDocument = defineTool({
       .array(operationSchema)
       .min(1)
       .describe("Edits applied in order; later ones see the result of earlier ones"),
+    preview: z
+      .boolean()
+      .default(false)
+      .describe("Apply the edits, render the result, then roll back. Nothing is saved."),
   },
-  handler: async ({ path, operations }) => {
+  handler: async ({ path, operations, preview }) => {
     const resolved = await requireExistingFile(path, "path");
     await refuseIfOpen(resolved);
 
@@ -283,20 +308,85 @@ export const editDocument = defineTool({
       await requireExistingFile(image, "add_image.file");
     }
 
+    const replacesBoxText = (operations as Operation[]).some((op) => op.kind === "set_shape_text");
+
+    // Replacing a box's text loses list nesting, because Pages exposes no verb
+    // for it — so the loss is announced here rather than found later in a
+    // render. Only worth the export when an operation can actually cause it.
+    let warning: string | undefined;
+    if (replacesBoxText) {
+      const nested = (await readParagraphs(resolved)).some((p) => p.level > 0);
+      if (nested) {
+        warning =
+          "This document uses nested bullets, and replacing a box's text flattens them — " +
+          "Pages exposes no way to set list level from AppleScript. Everything else is preserved.";
+      }
+    }
+
+    // Roll back to exactly what was there, which means capturing each affected
+    // box's text first — per box, because that is the granularity the edit
+    // works at and the only text a rollback can put back accurately.
+    const touchedBoxes = (operations as Operation[]).filter(
+      (op): op is Extract<Operation, { kind: "set_shape_text" }> => op.kind === "set_shape_text",
+    );
+    const before: Array<{ op: (typeof touchedBoxes)[number]; text: string }> = [];
+    if (preview) {
+      for (const op of touchedBoxes) {
+        before.push({
+          op,
+          text: await runScript(READ_SHAPE_TEXT_SCRIPT, [
+            resolved,
+            String(op.shape),
+            op.group === undefined ? "" : String(op.group),
+          ]),
+        });
+      }
+    }
+
     const paragraphs = await runScript(EDIT_DOCUMENT_SCRIPT, [
       resolved,
       ...encodeOperations(operations as Operation[]),
     ]);
 
+    if (!preview) {
+      return {
+        path: resolved,
+        applied: true,
+        operationsApplied: operations.length,
+        paragraphCount: Number(paragraphs),
+        ...(warning ? { warning } : {}),
+      };
+    }
+
+    const rendered = resolved.replace(/\.pages$/, "") + "-preview.png";
+    try {
+      await renderDocument(resolved, rendered, 1200);
+    } finally {
+      // In `finally` on purpose: a preview that fails to render must still leave
+      // the document as it found it. A rollback that only runs on success is a
+      // rollback that fails exactly when it is needed.
+      if (before.length > 0) {
+        await runScript(EDIT_DOCUMENT_SCRIPT, [
+          resolved,
+          ...encodeOperations(before.map(({ op, text }) => ({ ...op, text }))),
+        ]);
+      }
+    }
+
     return {
       path: resolved,
+      applied: false,
+      preview: rendered,
       operationsApplied: operations.length,
-      paragraphCount: Number(paragraphs),
+      ...(warning ? { warning } : {}),
     };
   },
   cliFormat: (result) => {
-    const r = result as { operationsApplied: number; path: string };
-    return `Applied ${r.operationsApplied} edit(s) to ${r.path}.`;
+    const r = result as { applied: boolean; operationsApplied: number; path: string; preview?: string; warning?: string };
+    const head = r.applied
+      ? `Applied ${r.operationsApplied} edit(s) to ${r.path}.`
+      : `Previewed ${r.operationsApplied} edit(s) — not saved. See ${r.preview}`;
+    return r.warning ? `${head}\n${r.warning}` : head;
   },
 });
 
@@ -407,6 +497,24 @@ async function withExport<T>(
   }
 }
 
+/**
+ * A document's paragraphs with their styling, via a DOCX round trip.
+ *
+ * Shared by `read_formatted` (which reports it) and `restore_styling` (which
+ * uses it as the record of what a box looked like before an edit).
+ */
+async function readParagraphs(source: string) {
+  return withExport(source, "docx", async (docx) => {
+    const scratch = await mkdtemp(join(tmpdir(), "macos-pages-docx-"));
+    try {
+      await extractDocumentXml(docx, scratch);
+      return parseDocx(await readFile(join(scratch, "word", "document.xml"), "utf8"));
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  });
+}
+
 export const checkFit = defineTool({
   namespace: NAMESPACE,
   access: "read",
@@ -460,16 +568,7 @@ export const readFormatted = defineTool({
   },
   handler: async ({ path, includeRuns }) => {
     const resolved = await requireExistingFile(path, "path");
-
-    const paragraphs = await withExport(resolved, "docx", async (docx) => {
-      const scratch = await mkdtemp(join(tmpdir(), "macos-pages-docx-"));
-      try {
-        await extractDocumentXml(docx, scratch);
-        return parseDocx(await readFile(join(scratch, "word", "document.xml"), "utf8"));
-      } finally {
-        await rm(scratch, { recursive: true, force: true });
-      }
-    });
+    const paragraphs = await readParagraphs(resolved);
 
     return {
       path: resolved,
@@ -485,6 +584,100 @@ export const readFormatted = defineTool({
     const r = result as { summary: { paragraphs: number; runs: number; boldRuns: number; sizes: number[]; fonts: string[] } };
     const s = r.summary;
     return `${s.paragraphs} paragraphs, ${s.runs} runs (${s.boldRuns} bold). Sizes: ${s.sizes.join(", ")}pt. Fonts: ${s.fonts.join(", ")}.`;
+  },
+});
+
+export const restoreStyling = defineTool({
+  namespace: NAMESPACE,
+  access: "write",
+  name: "restore_styling",
+  description:
+    "Re-apply a document's own formatting after its text was replaced. Replacing a text box's contents makes every character inherit the box's first character's style, which turns a styled document uniformly bold. Capture the styling first (this tool reads it), replace the text, then run this to put bold, italic and sizes back on the words that survived.",
+  schema: {
+    path: z.string().describe("Absolute path to a .pages document"),
+    shape: z.number().int().min(1).describe("1-based shape number, in read_document order"),
+    group: z.number().int().min(1).optional().describe("1-based group number, if the box is in a group"),
+    runs: z
+      .array(
+        z.object({
+          text: z.string(),
+          bold: z.boolean().default(false),
+          italic: z.boolean().default(false),
+          size: z.number().positive().optional(),
+          font: z.string().optional(),
+        }),
+      )
+      .min(1)
+      .describe("The styling captured before the edit — read_formatted's runs, with includeRuns: true"),
+    baseFace: z
+      .string()
+      .default("Times-Roman")
+      .describe("The face plain body text should wear. The whole box is set to this first, then styled runs are applied on top."),
+    baseSize: z.number().positive().optional().describe("The size plain body text should wear"),
+  },
+  handler: async ({ path, shape, group, runs, baseFace, baseSize }) => {
+    const resolved = await requireExistingFile(path, "path");
+
+    // Match against the text as it is NOW, after the replacement.
+    const currentText = await runScript(READ_SHAPE_TEXT_SCRIPT, [
+      resolved,
+      String(shape),
+      group === undefined ? "" : String(group),
+    ]);
+
+    const { targets, unmatched } = matchRuns(runs, currentText);
+    const worthDoing = withoutRedundant(targets, baseFace, baseSize);
+
+    const argv = [resolved, String(shape), group === undefined ? "" : String(group)];
+
+    // Reset the whole box to plain first, then style on top.
+    //
+    // Without this, restoring made things worse rather than better. A flattened
+    // box wears the heading's bold everywhere; applying styling only to the runs
+    // that matched leaves every unmatched line — most of the body, after real
+    // edits — still bold. Measured on the resume: bold runs went 145 → 159 when
+    // it should have been heading toward 115. Resetting first means unmatched
+    // text lands as plain body copy, which is what it almost always is.
+    for (let paragraph = 1; paragraph <= currentText.split("\n").length; paragraph++) {
+      argv.push(
+        String(paragraph),
+        "1",
+        // -1 as a sentinel for "to the end of the paragraph"; the script
+        // resolves it, since only AppleScript knows the paragraph's length.
+        "-1",
+        baseFace,
+        baseSize === undefined ? "" : String(baseSize),
+      );
+    }
+
+    for (const target of worthDoing) {
+      argv.push(
+        String(target.paragraph),
+        String(target.from),
+        String(target.to),
+        target.face,
+        target.size === undefined ? "" : String(target.size),
+      );
+    }
+
+    const applied = Number(await runScript(STYLE_RUNS_SCRIPT, argv)) - currentText.split("\n").length;
+
+    return {
+      path: resolved,
+      // Counts, not a bare "ok". A restore that matched nothing is a real
+      // outcome the caller has to see rather than infer.
+      restored: applied,
+      skippedAsRedundant: targets.length - worthDoing.length,
+      unmatched: unmatched.length,
+      unmatchedText: unmatched.map((run) => run.text).slice(0, 20),
+      unresolvedFonts: worthDoing.filter((t) => !t.exact).length,
+    };
+  },
+  cliFormat: (result) => {
+    const r = result as { restored: number; unmatched: number; unmatchedText: string[] };
+    const lines = [`Restored styling on ${r.restored} range(s); ${r.unmatched} could not be matched.`];
+    for (const text of r.unmatchedText) lines.push(`  ? ${text}`);
+    return lines.join("\n");
   },
 });
 

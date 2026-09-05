@@ -439,6 +439,128 @@ end isAlreadyOpen
 `;
 
 /**
+ * The text of one box, rather than the whole document.
+ *
+ * argv: 1 path, 2 shape, 3 group ("" for none)
+ *
+ * `read_document` concatenates every box, which is right for reading a document
+ * and wrong for editing one: restoring styling means matching runs against the
+ * text of the box being changed, and offsets computed against the concatenation
+ * would point at the wrong characters entirely.
+ */
+export const READ_SHAPE_TEXT_SCRIPT = `
+on run argv
+  set sourcePath to item 1 of argv
+  set shIdx to (item 2 of argv) as integer
+  set grp to item 3 of argv
+  with timeout of 20 seconds
+    set wasOpen to my isAlreadyOpen(sourcePath)
+    tell application "Pages"
+      set d to open (POSIX file sourcePath)
+      if d is missing value then error "Pages could not open the document: " & sourcePath
+      if grp is "" then
+        set t to object text of shape shIdx of d as text
+      else
+        set t to object text of shape shIdx of group (grp as integer) of d as text
+      end if
+      if not wasOpen then close d saving no
+    end tell
+  end timeout
+  return t
+end run
+
+on isAlreadyOpen(targetPath)
+  tell application "Pages" to set n to count of documents
+  repeat with i from 1 to n
+    try
+      tell application "Pages" to set f to file of document i
+      if (POSIX path of (f as alias)) is targetPath then return true
+    end try
+  end repeat
+  return false
+end isAlreadyOpen
+
+`;
+
+/**
+ * Apply per-character styling to ranges inside one text box.
+ *
+ * argv: 1 path, 2 shape, 3 group ("" for none), then repeating 5-item groups of
+ *       paragraph, from, to, face, size ("" to leave the size alone)
+ *
+ * This is what makes a formatting-preserving edit possible. Pages offers no
+ * boolean for bold — weight is expressed by naming a different face — so the
+ * caller resolves faces (faces.ts) and this script only assigns them.
+ *
+ * Character ranges rather than words: a run can start mid-word, and Pages
+ * accepts `characters N thru M` on a paragraph, which words cannot express.
+ *
+ * A range that Pages rejects is skipped rather than aborting the batch. One
+ * stale offset should not discard every other correct restoration, and the
+ * count returned tells the caller how many actually landed — silence about a
+ * partial application would be the failure mode worth avoiding.
+ */
+export const STYLE_RUNS_SCRIPT = `
+on run argv
+  set targetPath to item 1 of argv
+  set shIdx to (item 2 of argv) as integer
+  set grp to item 3 of argv
+  set argc to count of argv
+  set applied to 0
+  with timeout of 120 seconds
+    set wasOpen to my isAlreadyOpen(targetPath)
+    tell application "Pages"
+      set d to open (POSIX file targetPath)
+      if d is missing value then error "Pages could not open the document: " & targetPath
+      if grp is "" then
+        set boxRef to a reference to object text of shape shIdx of d
+      else
+        set boxRef to a reference to object text of shape shIdx of group (grp as integer) of d
+      end if
+      set i to 4
+      repeat while i + 4 <= argc
+        set pIdx to (item i of argv) as integer
+        set c1 to (item (i + 1) of argv) as integer
+        set c2 to (item (i + 2) of argv) as integer
+        set faceName to item (i + 3) of argv
+        set sizeText to item (i + 4) of argv
+        try
+          -- -1 means "to the end of this paragraph". Only AppleScript knows how
+          -- long the paragraph is, so the caller cannot compute it: this is how
+          -- a whole paragraph gets reset to a baseline before styled runs go on
+          -- top of it.
+          if c2 is -1 then set c2 to count of characters of paragraph pIdx of boxRef
+          if c2 >= c1 then
+            set font of characters c1 thru c2 of paragraph pIdx of boxRef to faceName
+            if sizeText is not "" then
+              set size of characters c1 thru c2 of paragraph pIdx of boxRef to (sizeText as real)
+            end if
+            set applied to applied + 1
+          end if
+        end try
+        set i to i + 5
+      end repeat
+      save d
+      if not wasOpen then close d saving no
+    end tell
+  end timeout
+  return applied as text
+end run
+
+on isAlreadyOpen(targetPath)
+  tell application "Pages" to set n to count of documents
+  repeat with i from 1 to n
+    try
+      tell application "Pages" to set f to file of document i
+      if (POSIX path of (f as alias)) is targetPath then return true
+    end try
+  end repeat
+  return false
+end isAlreadyOpen
+
+`;
+
+/**
  * Export a document to another format.
  *
  * argv: 1 source, 2 destination, 3 format enumerator
