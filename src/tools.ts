@@ -612,7 +612,7 @@ export const restoreStyling = defineTool({
     baseFace: z
       .string()
       .default("Times-Roman")
-      .describe("The face plain body text should wear. The whole box is set to this first, then styled runs are applied on top."),
+      .describe("The face plain body text should wear. The whole box is reset to this first, then styled runs go on top. Pass \"\" to skip the reset and only add styling."),
     baseSize: z.number().positive().optional().describe("The size plain body text should wear"),
   },
   handler: async ({ path, shape, group, runs, baseFace, baseSize }) => {
@@ -630,15 +630,18 @@ export const restoreStyling = defineTool({
 
     const argv = [resolved, String(shape), group === undefined ? "" : String(group)];
 
-    // Reset the whole box to plain first, then style on top.
+    // Reset the whole box to a baseline first, then style on top.
     //
     // Without this, restoring made things worse rather than better. A flattened
     // box wears the heading's bold everywhere; applying styling only to the runs
     // that matched leaves every unmatched line — most of the body, after real
     // edits — still bold. Measured on the resume: bold runs went 145 → 159 when
-    // it should have been heading toward 115. Resetting first means unmatched
-    // text lands as plain body copy, which is what it almost always is.
-    for (let paragraph = 1; paragraph <= currentText.split("\n").length; paragraph++) {
+    // they should have been heading toward 115. Resetting first put them at 87.
+    //
+    // An empty `baseFace` skips the reset, which is how a caller adds styling to
+    // a box without disturbing what is already there.
+    const resetPasses = baseFace === "" ? 0 : currentText.split("\n").length;
+    for (let paragraph = 1; paragraph <= resetPasses; paragraph++) {
       argv.push(
         String(paragraph),
         "1",
@@ -660,7 +663,13 @@ export const restoreStyling = defineTool({
       );
     }
 
-    const applied = Number(await runScript(STYLE_RUNS_SCRIPT, argv)) - currentText.split("\n").length;
+    // The script counts every range it styled, resets included. Subtracting the
+    // resets it was *asked* for would go negative whenever some were skipped —
+    // a paragraph can be empty, and an empty range is not stylable. Clamping at
+    // zero keeps the number meaning "styled runs applied" rather than becoming
+    // an arithmetic artefact.
+    const totalApplied = Number(await runScript(STYLE_RUNS_SCRIPT, argv));
+    const applied = Math.max(0, Math.min(worthDoing.length, totalApplied - resetPasses));
 
     return {
       path: resolved,
