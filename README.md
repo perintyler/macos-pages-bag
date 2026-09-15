@@ -94,10 +94,15 @@ the document.
 - **Close or quit anything.** There is no such tool, and no script closes a
   document it did not open. Asked to write to a document you have open, it
   refuses and names it rather than overwriting your unsaved work.
-- **Nested bullets.** Pages exposes no list-level vocabulary to AppleScript at
-  all — no `list style`, no `indent level`. Replacing a box's text flattens two
-  levels of bullets into one, and nothing can put them back. `edit_document`
-  warns when it is about to do this.
+- **Nested bullets, through AppleScript.** Pages exposes no list-level
+  vocabulary to AppleScript at all — no `list style`, no `indent level`.
+  Replacing a box's text with `edit_document` flattens two levels of bullets
+  into one, and it warns when it is about to do this.
+
+  Use `replace_text` instead when the document's formatting matters: it round
+  trips through Word format rather than AppleScript, so nested bullets and
+  underlined heading rules survive. `list_text_runs` shows the strings it can
+  match, which are split at every styling change rather than by sentence.
 - **Markdown.** `create_document` takes plain text. Use `edit_document` for
   formatting, or the `md_to_pdf` bag for styled markdown.
 - **Templates faithfully.** Setting body text replaces a template's own content,
