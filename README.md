@@ -140,7 +140,7 @@ barry install ~/repos/bags/macos-pages --as macos-pages
 barry pack macos-pages
 ```
 
-`package.json` depends on `@barry-rocks/tools` through a relative `link:`, which
+`package.json` depends on `@barry-rocks/sdk-bags` through a relative `link:`, which
 assumes [barry](https://github.com/perintyler/barry) is checked out alongside
 this bag — `../../barry/packages/tools` from here.
 

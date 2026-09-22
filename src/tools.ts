@@ -17,7 +17,7 @@
  * regardless.
  */
 
-import { defineTool } from "@barry-rocks/tools";
+import { defineTool } from "@barry-rocks/sdk-bags";
 import { existsSync } from "node:fs";
 import { mkdtemp, readdir, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
