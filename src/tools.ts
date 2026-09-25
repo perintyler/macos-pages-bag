@@ -17,7 +17,7 @@
  * regardless.
  */
 
-import { defineTool } from "@barry-rocks/sdk-bags";
+import { defineTool } from "@barry-rocks/sdk/bags";
 import { existsSync } from "node:fs";
 import { mkdtemp, readdir, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -278,7 +278,7 @@ export const inspectDocument = defineTool({
     };
   },
   cliFormat: (result) => {
-    const r = result as Record<string, number>;
+    const r = result;
     return `${r.pages} page(s), ${r.paragraphs} paragraph(s), ${r.words} word(s), ${r.tables} table(s), ${r.images} image(s), ${r.shapes} shape(s)`;
   },
 });
