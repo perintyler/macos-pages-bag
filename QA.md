@@ -318,7 +318,7 @@ After `barry install ~/repos/bags/macos-pages --as macos-pages` and
 ```bash
 barry bag show macos-pages
 pnpm --filter @barry-rocks/mcp-server build:http   # the prod bundle does NOT auto-rebuild
-launchctl kickstart -k gui/$(id -u)/com.barry.mcp.barry
+barry service restart barry.engine
 ```
 
 **Expected:** 16 tools. In a fresh session, `list_templates`, `read_table`,
