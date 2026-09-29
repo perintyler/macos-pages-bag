@@ -28,3 +28,8 @@ tools:
 # Pages is an application bundle rather than a binary on PATH, so the
 # `dependencies:` check would not see it. `status` reports whether it is
 # installed, and distinguishes that from automation being denied.
+
+permissions:
+  - kind: automation
+    app: Pages
+    reason: every tool drives Pages through AppleScript
