@@ -15,15 +15,10 @@ instructions: |
     to one instead.
 
 tools:
-  entry: tools.ts
-  # Situational: list_templates is worth one call while composing a
-  # create_document, and read_table only matters for a document already known to
-  # contain one. Both stay reachable through tool_search.
-  deferred:
-    - list_templates
-    - read_table
-    - diff_documents
-    - unblock_document
+  - list_templates: deferred
+  - read_table: deferred
+  - diff_documents: deferred
+  - unblock_document: deferred
 
 # Pages is an application bundle rather than a binary on PATH, so the
 # `dependencies:` check would not see it. `status` reports whether it is
